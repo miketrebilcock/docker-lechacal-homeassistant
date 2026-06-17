@@ -10,12 +10,11 @@ const port = new SerialPort(config.serialPort || '/dev/ttyAMA0', {
     autoOpen: false
 })
 
-var IrmsMAoffset = config.IrmsMAoffset || -240;
+var IrmsMAoffset = config.IrmsMAoffset || 0;
 var receivedSerialData = false;
 
 console.log("Establishing MQTT connection...");
-var mqttClient  = mqtt.connect(`mqtt://${config.mqttServer || '0.0.0.0'}:${config.mqttPort || 1883}`)
-
+var mqttClient  = mqtt.connect(`mqtt://${config.mqttServer || '0.0.0.0'}:${config.mqttPort || 1883}`, {username: config.mqttUsername, password: config.mqttPassword})
 const responseJsonTemplate = require(`./config/device-mapping/${config.deviceMapping || 'RPICT7V1.json'}`);
 
 // ------------------------------------------------------------
@@ -47,7 +46,10 @@ parser.on('data', function (data) {
     // Read sensor mapping from JSON file.
     Object.keys(responseJsonTemplate).forEach(function(key) {
         try {
-            pushHASensorData(key, parseDataFromTemplateParams(values[count], key))
+    	    const value = parseDataFromTemplateParams(values[count], key);
+    	    if (!isNaN(value)) {
+        	pushHASensorData(key, value);
+	    }
         } catch(e) {
             console.error(e);
         }
@@ -84,27 +86,46 @@ function parseDataFromTemplateParams(data, configItem) {
 }
 
 function createHASensor(name, unit_of_measurement, icon) {
+    const config_payload = {
+        "name": name,
+        "unique_id": `${config.mqttDevicename || 'lechacal'}_${name}`,
+        "unit_of_measurement": unit_of_measurement,
+        "state_topic": `${config.mqttTopic || 'homeassistant'}/sensor/${config.mqttDevicename || 'lechacal'}_${name}`,
+        "icon": `mdi:${icon}`,
+        "device": {
+            "identifiers": [config.mqttDevicename || 'lechacal'],
+            "name": config.mqttDevicename || 'lechacal',
+            "model": config.deviceMapping || 'RPICT3T1',
+            "manufacturer": "Lechacal"
+        }
+    };
+    if (unit_of_measurement === 'W') {
+        config_payload.device_class = "power";
+        config_payload.state_class = "measurement";
+    }
     mqttClient.publish(
         `${config.mqttTopic || 'homeassistant'}/sensor/${config.mqttDevicename || 'lechacal'}_${name}/config`,
-        `{
-            "name": "${name}",
-            "unit_of_measurement": "${unit_of_measurement}",
-            "state_topic": "${config.mqttTopic || 'homeassistant'}/sensor/${config.mqttDevicename || 'lechacal'}_${name}",
-            "icon": "mdi:${icon}"
-        }`
+        JSON.stringify(config_payload),
+        { retain: true }
     );
 }
 
 function pushHASensorData(name, data) {
+    const importValue = data > 0 ? data : 0;
+    const exportValue = data < 0 ? Math.abs(data) : 0;
     mqttClient.publish(
-        `${config.mqttTopic || 'homeassistant'}/sensor/${config.mqttDevicename || 'lechacal'}_${name}`, `${data}`
+        `${config.mqttTopic || 'homeassistant'}/sensor/${config.mqttDevicename || 'lechacal'}_${name}`, `${importValue}`
+    );
+    mqttClient.publish(
+        `${config.mqttTopic || 'homeassistant'}/sensor/${config.mqttDevicename || 'lechacal'}_${name}_export`, `${exportValue}`
     );
 }
 
 function createHASensors() {
     // Logic to Auto-create HA device...
     Object.keys(responseJsonTemplate).forEach(function(key) {
-        createHASensor(key, responseJsonTemplate[key].unit_of_measurement, responseJsonTemplate[key].icon)
+        createHASensor(key, responseJsonTemplate[key].unit_of_measurement, responseJsonTemplate[key].icon);
+	createHASensor(key + '_export', responseJsonTemplate[key].unit_of_measurement, responseJsonTemplate[key].icon);
     });
 }
 
